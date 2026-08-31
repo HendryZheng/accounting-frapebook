@@ -136,6 +136,32 @@ visiting `chrome://inspect` while Frappe Books is running in dev mode.
 
 See more [here](https://www.electronjs.org/docs/latest/tutorial/debugging-main-process#external-debuggers).
 
+**Note: `DatabaseError` on Apple Silicon**
+
+If creating a new org fails with a `DatabaseError` toast, the `better-sqlite3`
+native module was probably built for the wrong architecture. Check it:
+
+```bash
+node -p process.arch                                        # your shell's Node
+file node_modules/better-sqlite3/build/Release/better_sqlite3.node
+```
+
+On an Apple Silicon Mac the `.node` file must be `arm64`. If it says `x86_64`,
+your shell is running an Intel Node under Rosetta (`uname -m` will print
+`x86_64` too), so the `postinstall` hook built the module for x64 while Electron
+itself is arm64. Opening any database then fails with `ERR_DLOPEN_FAILED`, which
+the UI reports as a generic `DatabaseError`.
+
+Force a rebuild for the right architecture:
+
+```bash
+npx electron-rebuild -f -w better-sqlite3 --arch arm64
+```
+
+This has to be repeated after every `yarn install`. To fix it permanently,
+install an arm64 build of Node (for example `arch -arm64 brew install node`, or
+an arm64 Node via nvm) so that `node -p process.arch` reports `arm64`.
+
 #### Build
 
 To build Frappe Books and create an installer:
