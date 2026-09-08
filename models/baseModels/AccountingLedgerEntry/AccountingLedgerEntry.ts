@@ -9,6 +9,10 @@ export class AccountingLedgerEntry extends Doc {
   party?: string;
   debit?: Money;
   credit?: Money;
+  transactionCurrency?: string;
+  foreignDebit?: Money;
+  foreignCredit?: Money;
+  exchangeRate?: number;
   referenceType?: string;
   referenceName?: string;
   reverted?: boolean;
@@ -29,6 +33,10 @@ export class AccountingLedgerEntry extends Doc {
         referenceName: this.referenceName,
         debit: this.credit,
         credit: this.debit,
+        transactionCurrency: this.transactionCurrency,
+        foreignDebit: this.foreignCredit,
+        foreignCredit: this.foreignDebit,
+        exchangeRate: this.exchangeRate,
         reverted: true,
         reverts: this.name,
       }

@@ -82,6 +82,10 @@ export abstract class LedgerReport extends Report {
       'date',
       'debit',
       'credit',
+      'transactionCurrency',
+      'foreignDebit',
+      'foreignCredit',
+      'exchangeRate',
       'referenceType',
       'referenceName',
       'party',
@@ -107,6 +111,17 @@ export abstract class LedgerReport extends Report {
         date: new Date(entry.date),
         debit: Math.abs(safeParseFloat(entry.debit)),
         credit: Math.abs(safeParseFloat(entry.credit)),
+        transactionCurrency: entry.transactionCurrency,
+        foreignDebit: entry.transactionCurrency
+          ? Math.abs(safeParseFloat(entry.foreignDebit))
+          : null,
+        foreignCredit: entry.transactionCurrency
+          ? Math.abs(safeParseFloat(entry.foreignCredit))
+          : null,
+        foreignBalance: null,
+        exchangeRate: entry.transactionCurrency
+          ? safeParseFloat(entry.exchangeRate)
+          : null,
         balance: 0,
         referenceType: entry.referenceType,
         referenceName: entry.referenceName,

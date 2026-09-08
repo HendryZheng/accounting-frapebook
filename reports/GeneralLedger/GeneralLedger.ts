@@ -74,6 +74,11 @@ export class GeneralLedger extends LedgerReport {
       debit: totalDebit,
       credit: totalCredit,
       balance: totalDebit - totalCredit,
+      transactionCurrency: '',
+      foreignDebit: null,
+      foreignCredit: null,
+      foreignBalance: null,
+      exchangeRate: null,
       referenceType: '',
       referenceName: '',
       party: '',
@@ -133,7 +138,17 @@ export class GeneralLedger extends LedgerReport {
         value = this.fyo.format(value, FieldTypeEnum.Date);
       }
 
-      if (typeof value === 'number' && fieldname !== 'index') {
+      if (
+        typeof value === 'number' &&
+        [
+          'foreignDebit',
+          'foreignCredit',
+          'foreignBalance',
+          'exchangeRate',
+        ].includes(fieldname)
+      ) {
+        value = this.fyo.format(value, FieldTypeEnum.Float);
+      } else if (typeof value === 'number' && fieldname !== 'index') {
         value = this.fyo.format(value, FieldTypeEnum.Currency);
       }
 
@@ -184,6 +199,11 @@ export class GeneralLedger extends LedgerReport {
       debit: null,
       credit: null,
       balance: null,
+      transactionCurrency: '',
+      foreignDebit: null,
+      foreignCredit: null,
+      foreignBalance: null,
+      exchangeRate: null,
       referenceType: '',
       referenceName: '',
       party: '',
@@ -200,6 +220,7 @@ export class GeneralLedger extends LedgerReport {
       let balance = 0;
       let debit = 0;
       let credit = 0;
+      const foreignBalanceByCurrency = new Map<string, number>();
 
       for (const entry of map.get(key)!) {
         debit += entry.debit!;
@@ -208,6 +229,16 @@ export class GeneralLedger extends LedgerReport {
         const diff = entry.debit! - entry.credit!;
         balance += diff;
         entry.balance = balance;
+
+        if (entry.transactionCurrency) {
+          const currency = entry.transactionCurrency;
+          const foreignBalance =
+            (foreignBalanceByCurrency.get(currency) ?? 0) +
+            (entry.foreignDebit ?? 0) -
+            (entry.foreignCredit ?? 0);
+          foreignBalanceByCurrency.set(currency, foreignBalance);
+          entry.foreignBalance = foreignBalance;
+        }
       }
 
       /**
@@ -221,6 +252,11 @@ export class GeneralLedger extends LedgerReport {
           debit,
           credit,
           balance: debit - credit,
+          transactionCurrency: '',
+          foreignDebit: null,
+          foreignCredit: null,
+          foreignBalance: null,
+          exchangeRate: null,
           referenceType: '',
           referenceName: '',
           party: '',
@@ -393,6 +429,39 @@ export class GeneralLedger extends LedgerReport {
         label: t`Balance`,
         fieldtype: 'Currency',
         fieldname: 'balance',
+        align: 'right',
+        width: 1.25,
+      },
+      {
+        label: t`Currency`,
+        fieldtype: 'Data',
+        fieldname: 'transactionCurrency',
+      },
+      {
+        label: t`Foreign Debit`,
+        fieldtype: 'Float',
+        fieldname: 'foreignDebit',
+        align: 'right',
+        width: 1.25,
+      },
+      {
+        label: t`Foreign Credit`,
+        fieldtype: 'Float',
+        fieldname: 'foreignCredit',
+        align: 'right',
+        width: 1.25,
+      },
+      {
+        label: t`Foreign Balance`,
+        fieldtype: 'Float',
+        fieldname: 'foreignBalance',
+        align: 'right',
+        width: 1.25,
+      },
+      {
+        label: t`Exchange Rate`,
+        fieldtype: 'Float',
+        fieldname: 'exchangeRate',
         align: 'right',
         width: 1.25,
       },
