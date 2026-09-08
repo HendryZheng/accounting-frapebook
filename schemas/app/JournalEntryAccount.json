@@ -21,8 +21,37 @@
       "fieldname": "credit",
       "label": "Credit",
       "fieldtype": "Currency"
+    },
+    {
+      "fieldname": "transactionCurrency",
+      "label": "Transaction Currency",
+      "fieldtype": "Link",
+      "target": "Currency"
+    },
+    {
+      "fieldname": "foreignDebit",
+      "label": "Foreign Debit",
+      "fieldtype": "Currency"
+    },
+    {
+      "fieldname": "foreignCredit",
+      "label": "Foreign Credit",
+      "fieldtype": "Currency"
+    },
+    {
+      "fieldname": "exchangeRate",
+      "label": "Exchange Rate",
+      "fieldtype": "Float"
     }
   ],
-  "tableFields": ["account", "debit", "credit"],
+  "tableFields": [
+    "account",
+    "debit",
+    "credit",
+    "transactionCurrency",
+    "foreignDebit",
+    "foreignCredit",
+    "exchangeRate"
+  ],
   "keywordFields": ["account"]
 }

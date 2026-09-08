@@ -31,12 +31,37 @@ export class JournalEntry extends Transactional {
 
       if (!debit.isZero()) {
         await posting.debit(account, debit);
+        await this.setForeignCurrencyDetails(
+          posting.debitMap[account],
+          row,
+          'foreignDebit'
+        );
       } else if (!credit.isZero()) {
         await posting.credit(account, credit);
+        await this.setForeignCurrencyDetails(
+          posting.creditMap[account],
+          row,
+          'foreignCredit'
+        );
       }
     }
 
     return posting;
+  }
+
+  async setForeignCurrencyDetails(
+    ledgerEntry: Doc,
+    row: Doc,
+    amountField: 'foreignDebit' | 'foreignCredit'
+  ) {
+    const transactionCurrency = row.transactionCurrency as string | undefined;
+    if (!transactionCurrency) {
+      return;
+    }
+
+    await ledgerEntry.set('transactionCurrency', transactionCurrency);
+    await ledgerEntry.set(amountField, row.get(amountField) as Money);
+    await ledgerEntry.set('exchangeRate', row.exchangeRate as number);
   }
 
   hidden: HiddenMap = {

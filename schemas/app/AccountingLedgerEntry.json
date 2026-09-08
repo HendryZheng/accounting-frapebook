@@ -53,6 +53,35 @@
       "section": "Details"
     },
     {
+      "fieldname": "transactionCurrency",
+      "label": "Transaction Currency",
+      "fieldtype": "Link",
+      "target": "Currency",
+      "readOnly": true,
+      "section": "Details"
+    },
+    {
+      "fieldname": "foreignDebit",
+      "label": "Foreign Debit",
+      "fieldtype": "Currency",
+      "readOnly": true,
+      "section": "Details"
+    },
+    {
+      "fieldname": "foreignCredit",
+      "label": "Foreign Credit",
+      "fieldtype": "Currency",
+      "readOnly": true,
+      "section": "Details"
+    },
+    {
+      "fieldname": "exchangeRate",
+      "label": "Exchange Rate",
+      "fieldtype": "Float",
+      "readOnly": true,
+      "section": "Details"
+    },
+    {
       "fieldname": "referenceType",
       "label": "Ref. Type",
       "fieldtype": "Data",
@@ -90,6 +119,10 @@
     "party",
     "debit",
     "credit",
+    "transactionCurrency",
+    "foreignDebit",
+    "foreignCredit",
+    "exchangeRate",
     "referenceType",
     "referenceName",
     "reverted",

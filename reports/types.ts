@@ -47,6 +47,10 @@ export interface RawLedgerEntry {
   date: string;
   debit: string;
   credit: string;
+  transactionCurrency: string;
+  foreignDebit: string;
+  foreignCredit: string;
+  exchangeRate: string;
   referenceType: string;
   referenceName: string;
   party: string;
@@ -62,6 +66,11 @@ export interface LedgerEntry {
   date: Date | null;
   debit: number | null;
   credit: number | null;
+  transactionCurrency: string;
+  foreignDebit: number | null;
+  foreignCredit: number | null;
+  foreignBalance: number | null;
+  exchangeRate: number | null;
   balance: number | null;
   referenceType: string;
   referenceName: string;

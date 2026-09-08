@@ -1,8 +1,11 @@
 import { Doc } from 'fyo/model/doc';
-import { FiltersMap, FormulaMap } from 'fyo/model/types';
+import { CurrenciesMap, FiltersMap, FormulaMap } from 'fyo/model/types';
 import { Money } from 'pesa';
+import { DEFAULT_CURRENCY } from 'fyo/utils/consts';
 
 export class JournalEntryAccount extends Doc {
+  transactionCurrency?: string;
+
   getAutoDebitCredit(type: 'debit' | 'credit') {
     const currentValue = this.get(type) as Money;
     if (!currentValue.isZero()) {
@@ -34,6 +37,17 @@ export class JournalEntryAccount extends Doc {
     credit: {
       formula: () => this.getAutoDebitCredit('credit'),
     },
+  };
+
+  getCurrencies: CurrenciesMap = {
+    foreignDebit: () =>
+      this.transactionCurrency ??
+      this.fyo.singles.SystemSettings?.currency ??
+      DEFAULT_CURRENCY,
+    foreignCredit: () =>
+      this.transactionCurrency ??
+      this.fyo.singles.SystemSettings?.currency ??
+      DEFAULT_CURRENCY,
   };
 
   static filters: FiltersMap = {
