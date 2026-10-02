@@ -14,13 +14,19 @@
  *     --require ts-node/register --require tsconfig-paths/register \
  *     scripts/ptscdPostJournalEntry.ts
  */
-import { DatabaseManager } from 'backend/database/manager';
-import { Fyo } from 'fyo';
-import { DummyAuthDemux } from 'fyo/tests/helpers';
-import { initializeInstance } from 'src/utils/initialization';
-
-/** Marker carried in userRemark so a retry can find an entry already posted. */
-const KEY_PREFIX = 'PTSCD-KEY:';
+import {
+  checkAccounts,
+  clearStaleDrafts,
+  createAndSubmitJournalEntry,
+  fail,
+  findPosted,
+  isFailure,
+  markerFor,
+  out,
+  readStdin,
+  run,
+  withBooks,
+} from './ptscdShared';
 
 interface Line {
   account: string;
@@ -46,32 +52,25 @@ interface Request {
   };
 }
 
-type Result =
-  | { ok: true; externalReference: string; alreadyPosted: boolean; company: string }
-  | { ok: false; code: string; message: string };
-
-const out = (r: Result) => process.stdout.write(JSON.stringify(r) + '\n');
-
-function readStdin(): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let buf = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (c) => (buf += c));
-    process.stdin.on('end', () => resolve(buf));
-    process.stdin.on('error', reject);
-  });
-}
+type Posted = {
+  ok: true;
+  externalReference: string;
+  alreadyPosted: boolean;
+  company: string;
+};
 
 function validate(req: unknown): Request {
   const r = req as Request;
   if (!r || typeof r !== 'object') throw new Error('request must be an object');
-  if (typeof r.dbPath !== 'string' || !r.dbPath) throw new Error('dbPath is required');
+  if (typeof r.dbPath !== 'string' || !r.dbPath)
+    throw new Error('dbPath is required');
   if (typeof r.idempotencyKey !== 'string' || !r.idempotencyKey) {
     throw new Error('idempotencyKey is required');
   }
   const p = r.payload;
   if (!p || typeof p !== 'object') throw new Error('payload is required');
-  if (typeof p.date !== 'string' || !p.date) throw new Error('payload.date is required');
+  if (typeof p.date !== 'string' || !p.date)
+    throw new Error('payload.date is required');
   if (!Array.isArray(p.accounts) || p.accounts.length < 2) {
     throw new Error('payload.accounts needs at least two lines');
   }
@@ -88,76 +87,31 @@ async function main() {
   try {
     req = validate(JSON.parse(await readStdin()));
   } catch (e) {
-    return out({ ok: false, code: 'BAD_REQUEST', message: (e as Error).message });
+    return out(fail('BAD_REQUEST', (e as Error).message));
   }
 
-  const fyo = new Fyo({
-    DatabaseDemux: DatabaseManager,
-    AuthDemux: DummyAuthDemux,
-    isTest: true,
-    isElectron: false,
-  });
+  const result = await withBooks<Posted>(req.dbPath, async (fyo, company) => {
+    const marker = markerFor(req.idempotencyKey);
 
-  try {
-    let countryCode: string;
-    try {
-      countryCode = await fyo.db.connectToDatabase(req.dbPath);
-    } catch (e) {
-      return out({ ok: false, code: 'BOOKS_UNAVAILABLE',
-        message: `Could not open the Frappe Books company file. ${(e as Error).message}` });
-    }
-    await initializeInstance(req.dbPath, false, countryCode, fyo);
-
-    const company = (await fyo.getValue('AccountingSettings', 'companyName')) as string;
-    if (!company) {
-      return out({ ok: false, code: 'NO_COMPANY',
-        message: 'That file has no company set up. Open it in Frappe Books and finish setup first.' });
+    const existing = await findPosted(fyo, marker);
+    if (existing) {
+      return {
+        ok: true,
+        externalReference: existing,
+        alreadyPosted: true,
+        company,
+      };
     }
 
-    const marker = `${KEY_PREFIX} ${req.idempotencyKey}`;
+    await clearStaleDrafts(fyo, marker);
 
-    // Already posted? A retry after a crash between posting and recording the
-    // reference must return the original entry, never create a second one.
-    //
-    // Only a submitted, uncancelled entry counts. A draft carrying this marker
-    // is the wreckage of a failed attempt — reporting it as posted would tell
-    // the operator their books are updated when no ledger entry exists.
-    const existing = (await fyo.db.getAll('JournalEntry', {
-      fields: ['name'],
-      filters: { userRemark: ['like', marker], submitted: true, cancelled: false },
-      limit: 1,
-    })) as { name: string }[];
-    if (existing.length) {
-      return out({ ok: true, externalReference: existing[0].name, alreadyPosted: true, company });
-    }
-
-    // Clear any draft left by an earlier failure, so retries do not pile them
-    // up and the marker stays unambiguous.
-    const stale = (await fyo.db.getAll('JournalEntry', {
-      fields: ['name'],
-      filters: { userRemark: ['like', marker], submitted: false },
-    })) as { name: string }[];
-    for (const d of stale) {
-      try { await (await fyo.doc.getDoc('JournalEntry', d.name)).delete(); } catch { /* best effort */ }
-    }
-
-    // Check the accounts before creating anything. Frappe validates them too,
-    // but only once the parent row has been inserted — which would leave a
-    // draft behind for every typo.
-    for (const line of req.payload.accounts) {
-      const acc = (await fyo.db.getAll('Account', {
-        fields: ['name', 'isGroup'],
-        filters: { name: line.account },
-        limit: 1,
-      })) as { name: string; isGroup: number }[];
-      if (!acc.length) {
-        return out({ ok: false, code: 'INVALID_ACCOUNT',
-          message: `No account named "${line.account}" in ${company}.` });
-      }
-      if (acc[0].isGroup) {
-        return out({ ok: false, code: 'INVALID_ACCOUNT',
-          message: `"${line.account}" is a group account in ${company}; post to a leaf account.` });
-      }
+    const accountError = await checkAccounts(
+      fyo,
+      company,
+      req.payload.accounts.map((l) => l.account)
+    );
+    if (accountError) {
+      return accountError;
     }
 
     const remark = [req.payload.userRemark, marker].filter(Boolean).join('\n');
@@ -169,42 +123,19 @@ async function main() {
       userRemark: remark,
       accounts: req.payload.accounts,
     };
-    if (req.payload.referenceNumber) values.referenceNumber = req.payload.referenceNumber;
-    if (req.payload.referenceDate) values.referenceDate = req.payload.referenceDate;
-    const doc = fyo.doc.getNewDoc('JournalEntry', values as never);
+    if (req.payload.referenceNumber)
+      values.referenceNumber = req.payload.referenceNumber;
+    if (req.payload.referenceDate)
+      values.referenceDate = req.payload.referenceDate;
 
-    try {
-      await doc.sync();
-      await doc.submit();
-    } catch (e) {
-      // sync() inserts before submit() validates, so a failure here can leave a
-      // draft. Remove it rather than leaving a half-entry in the books.
-      try { if (!doc.notInserted) await doc.delete(); } catch { /* best effort */ }
-      throw e;
+    const name = await createAndSubmitJournalEntry(fyo, values as never);
+    if (isFailure(name)) {
+      return name;
     }
+    return { ok: true, externalReference: name, alreadyPosted: false, company };
+  });
 
-    const name = doc.name;
-    if (!name || !doc.isSubmitted) {
-      try { if (!doc.notInserted) await doc.delete(); } catch { /* best effort */ }
-      return out({ ok: false, code: 'NOT_SUBMITTED',
-        message: 'Frappe Books did not confirm the entry as submitted. Nothing was posted.' });
-    }
-    return out({ ok: true, externalReference: name, alreadyPosted: false, company });
-  } catch (e) {
-    const message = (e as Error).message ?? String(e);
-    // Map the ones an operator can actually act on.
-    let code = 'FRAPPE_ERROR';
-    if (/not a valid|does not exist|LinkValidationError/i.test(message)) code = 'INVALID_ACCOUNT';
-    if (/debit|credit|balance/i.test(message)) code = 'UNBALANCED';
-    if (/locked|SQLITE_BUSY/i.test(message)) code = 'BOOKS_LOCKED';
-    if (/date|period|frozen/i.test(message)) code = 'DATE_NOT_ALLOWED';
-    return out({ ok: false, code, message });
-  } finally {
-    try { await fyo.close(); } catch { /* closing is best effort */ }
-  }
+  out(result);
 }
 
-main().catch((e) => {
-  out({ ok: false, code: 'BRIDGE_CRASHED', message: (e as Error).stack ?? String(e) });
-  process.exit(1);
-});
+run(main);

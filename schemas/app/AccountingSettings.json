@@ -66,6 +66,20 @@
       "section": "Accounts"
     },
     {
+      "label": "Realized Exchange Gain/Loss Account",
+      "fieldname": "realizedExchangeAccount",
+      "fieldtype": "Link",
+      "target": "Account",
+      "section": "Accounts"
+    },
+    {
+      "label": "Unrealized Exchange Gain/Loss Account",
+      "fieldname": "unrealizedExchangeAccount",
+      "fieldtype": "Link",
+      "target": "Account",
+      "section": "Accounts"
+    },
+    {
       "fieldname": "enableDiscounting",
       "label": "Enable Discount Accounting",
       "fieldtype": "Check",

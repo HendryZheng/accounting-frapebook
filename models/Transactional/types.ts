@@ -18,3 +18,13 @@ export interface LedgerEntry {
 }
 
 export type TransactionType = 'credit' | 'debit';
+
+/**
+ * The foreign-currency side of a ledger line: the amount in the transaction
+ * currency and the rate it was converted at.
+ */
+export interface ForeignAmount {
+  currency: string;
+  amount: Money;
+  exchangeRate: number;
+}

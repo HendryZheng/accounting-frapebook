@@ -135,6 +135,12 @@
       "hidden": true
     },
     {
+      "fieldname": "exchangeRateSource",
+      "label": "Exchange Rate Source",
+      "fieldtype": "Data",
+      "placeholder": "e.g. BI JISDOR, bank counter rate"
+    },
+    {
       "fieldname": "discountAfterTax",
       "label": "Apply Discount After Tax",
       "fieldtype": "Check",
@@ -158,6 +164,13 @@
     {
       "fieldname": "outstandingAmount",
       "label": "Outstanding Amount",
+      "fieldtype": "Currency",
+      "readOnly": true,
+      "section": "Outstanding"
+    },
+    {
+      "fieldname": "outstandingForeign",
+      "label": "Outstanding (Invoice Currency)",
       "fieldtype": "Currency",
       "readOnly": true,
       "section": "Outstanding"

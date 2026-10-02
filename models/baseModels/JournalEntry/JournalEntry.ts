@@ -15,11 +15,77 @@ import {
   statusColor,
 } from 'models/helpers';
 import { Transactional } from 'models/Transactional/Transactional';
+import { ForeignAmount } from 'models/Transactional/types';
+import { ValidationError } from 'fyo/utils/errors';
 import { Money } from 'pesa';
 import { LedgerPosting } from '../../Transactional/LedgerPosting';
 
 export class JournalEntry extends Transactional {
   accounts?: Doc[];
+
+  async validate() {
+    this.validateForeignRows();
+    await super.validate();
+  }
+
+  /**
+   * A row that names a foreign currency must carry the foreign amount on the
+   * same side as the base amount, at a rate that converts one to the other.
+   */
+  validateForeignRows() {
+    const companyCurrency = this.fyo.singles.SystemSettings?.currency;
+    for (const row of this.accounts ?? []) {
+      const currency = row.transactionCurrency as string | undefined;
+      if (!currency || currency === companyCurrency) {
+        continue;
+      }
+
+      const debit = row.debit as Money;
+      const credit = row.credit as Money;
+      if (debit.isZero() && credit.isZero()) {
+        continue;
+      }
+
+      const line = ((row.idx as number) ?? 0) + 1;
+      const account = row.account as string;
+      const side = debit.isZero() ? 'credit' : 'debit';
+      const base = side === 'debit' ? debit : credit;
+      const foreign = row.get(
+        side === 'debit' ? 'foreignDebit' : 'foreignCredit'
+      ) as Money | null | undefined;
+      const otherForeign = row.get(
+        side === 'debit' ? 'foreignCredit' : 'foreignDebit'
+      ) as Money | null | undefined;
+      const rate = row.exchangeRate as number | null | undefined;
+
+      if (!foreign || foreign.isZero()) {
+        throw new ValidationError(
+          t`Line ${line} (${account}) is in ${currency} but has no ${currency} ${side}.`
+        );
+      }
+
+      if (otherForeign && !otherForeign.isZero()) {
+        throw new ValidationError(
+          t`Line ${line} (${account}) has its ${currency} amount on the wrong side.`
+        );
+      }
+
+      if (!rate || rate <= 0) {
+        throw new ValidationError(
+          t`Line ${line} (${account}) is in ${currency} but has no exchange rate.`
+        );
+      }
+
+      if (base.sub(foreign.mul(rate)).abs().gt(1)) {
+        throw new ValidationError(
+          t`Line ${line} (${account}): ${this.fyo.format(
+            base,
+            'Currency'
+          )} does not equal ${foreign.float} ${currency} at ${rate}.`
+        );
+      }
+    }
+  }
 
   async getPosting() {
     const posting: LedgerPosting = new LedgerPosting(this, this.fyo);
@@ -30,18 +96,16 @@ export class JournalEntry extends Transactional {
       const account = row.account as string;
 
       if (!debit.isZero()) {
-        await posting.debit(account, debit);
-        await this.setForeignCurrencyDetails(
-          posting.debitMap[account],
-          row,
-          'foreignDebit'
+        await posting.debit(
+          account,
+          debit,
+          this.getForeignAmount(row, 'foreignDebit')
         );
       } else if (!credit.isZero()) {
-        await posting.credit(account, credit);
-        await this.setForeignCurrencyDetails(
-          posting.creditMap[account],
-          row,
-          'foreignCredit'
+        await posting.credit(
+          account,
+          credit,
+          this.getForeignAmount(row, 'foreignCredit')
         );
       }
     }
@@ -49,19 +113,20 @@ export class JournalEntry extends Transactional {
     return posting;
   }
 
-  async setForeignCurrencyDetails(
-    ledgerEntry: Doc,
+  getForeignAmount(
     row: Doc,
     amountField: 'foreignDebit' | 'foreignCredit'
-  ) {
-    const transactionCurrency = row.transactionCurrency as string | undefined;
-    if (!transactionCurrency) {
+  ): ForeignAmount | undefined {
+    const currency = row.transactionCurrency as string | undefined;
+    if (!currency) {
       return;
     }
 
-    await ledgerEntry.set('transactionCurrency', transactionCurrency);
-    await ledgerEntry.set(amountField, row.get(amountField) as Money);
-    await ledgerEntry.set('exchangeRate', row.exchangeRate as number);
+    return {
+      currency,
+      amount: (row.get(amountField) as Money | null) ?? this.fyo.pesa(0),
+      exchangeRate: row.exchangeRate as number,
+    };
   }
 
   hidden: HiddenMap = {

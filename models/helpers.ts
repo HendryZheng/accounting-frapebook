@@ -19,7 +19,6 @@ import {
 import { AppliedCouponCodes } from './baseModels/AppliedCouponCodes/AppliedCouponCodes';
 import { CollectionRulesItems } from './baseModels/CollectionRulesItems/CollectionRulesItems';
 import { CouponCode } from './baseModels/CouponCode/CouponCode';
-import { DateTime } from 'luxon';
 import { Doc } from 'fyo/model/doc';
 import { Invoice } from './baseModels/Invoice/Invoice';
 import { Lead } from './baseModels/Lead/Lead';
@@ -36,7 +35,6 @@ import { StockTransfer } from './inventory/StockTransfer';
 import { ValidationError } from 'fyo/utils/errors';
 import { isPesa } from 'fyo/utils';
 import { numberSeriesDefaultsMap } from './baseModels/Defaults/Defaults';
-import { safeParseFloat } from 'utils/index';
 import { PriceList } from './baseModels/PriceList/PriceList';
 import { InvoiceItem } from './baseModels/InvoiceItem/InvoiceItem';
 import { SalesInvoiceItem } from './baseModels/SalesInvoiceItem/SalesInvoiceItem';
@@ -651,55 +649,6 @@ export function getIsDocEnabledColumn(): ColumnConfig {
       };
     },
   };
-}
-
-export async function getExchangeRate({
-  fromCurrency,
-  toCurrency,
-  date,
-}: {
-  fromCurrency: string;
-  toCurrency: string;
-  date?: string;
-}) {
-  if (!fetch) {
-    return 1;
-  }
-
-  if (!date) {
-    date = DateTime.local().toISODate();
-  }
-
-  const cacheKey = `currencyExchangeRate:${date}:${fromCurrency}:${toCurrency}`;
-
-  let exchangeRate = 0;
-  if (localStorage) {
-    exchangeRate = safeParseFloat(localStorage.getItem(cacheKey) as string);
-  }
-
-  if (exchangeRate && exchangeRate !== 1) {
-    return exchangeRate;
-  }
-
-  try {
-    const res = await fetch(
-      `https://api.vatcomply.com/rates?date=${date}&base=${fromCurrency}&symbols=${toCurrency}`
-    );
-    const data = (await res.json()) as {
-      base: string;
-      data: string;
-      rates: Record<string, number>;
-    };
-    exchangeRate = data.rates[toCurrency];
-  } catch (error) {
-    exchangeRate ??= 1;
-  }
-
-  if (localStorage) {
-    localStorage.setItem(cacheKey, String(exchangeRate));
-  }
-
-  return exchangeRate;
 }
 
 export function isCredit(rootType: AccountRootType) {

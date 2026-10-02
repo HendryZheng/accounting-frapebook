@@ -11,6 +11,7 @@ import {
 import { DEFAULT_CURRENCY } from 'fyo/utils/consts';
 import { ValidationError } from 'fyo/utils/errors';
 import { Transactional } from 'models/Transactional/Transactional';
+import { ForeignAmount } from 'models/Transactional/types';
 import {
   addItem,
   canApplyCouponCode,
@@ -18,7 +19,6 @@ import {
   createLoyaltyPointEntry,
   filterPricingRules,
   getAddedLPWithGrandTotal,
-  getExchangeRate,
   getNumberSeries,
   removeUnusedCoupons,
   getPricingRulesConflicts,
@@ -37,7 +37,7 @@ import { validateBatch } from 'models/inventory/helpers';
 import { ModelNameEnum } from 'models/types';
 import { Money } from 'pesa';
 import { FieldTypeEnum, Schema } from 'schemas/types';
-import { getIsNullOrUndef, joinMapLists, safeParseFloat } from 'utils';
+import { getIsNullOrUndef, joinMapLists } from 'utils';
 import { Defaults } from '../Defaults/Defaults';
 import { InvoiceItem } from '../InvoiceItem/InvoiceItem';
 import { Item } from '../Item/Item';
@@ -92,7 +92,9 @@ export abstract class Invoice extends Transactional {
   grandTotal?: Money;
   baseGrandTotal?: Money;
   outstandingAmount?: Money;
+  outstandingForeign?: Money;
   exchangeRate?: number;
+  exchangeRateSource?: string;
   setDiscountAmount?: boolean;
   discountAmount?: Money;
   discountPercent?: number;
@@ -195,6 +197,10 @@ export abstract class Invoice extends Transactional {
   }
 
   async validate() {
+    if (!this.isQuote && !this.submitted) {
+      await this._validateAccountCurrency();
+    }
+
     await super.validate();
     if (this.isQuote) {
       return;
@@ -227,6 +233,8 @@ export abstract class Invoice extends Transactional {
   }
 
   async beforeSubmit() {
+    await this._validateForeignCurrency();
+
     const partyDoc = (await this.fyo.doc.getDoc(
       ModelNameEnum.Party,
       this.party
@@ -300,6 +308,7 @@ export abstract class Invoice extends Transactional {
     await this.fyo.db.update(this.schemaName, {
       name: this.name as string,
       outstandingAmount: lpAddedBaseGrandTotal! || this.baseGrandTotal!,
+      ...(this.isMultiCurrency ? { outstandingForeign: this.grandTotal! } : {}),
     });
 
     const party = (await this.fyo.doc.getDoc(
@@ -397,24 +406,71 @@ export abstract class Invoice extends Transactional {
     return [];
   }
 
-  async getExchangeRate() {
-    if (!this.currency) {
-      return 1.0;
+  /**
+   * Rates are typed in by a person, never fetched. A foreign-currency invoice
+   * cannot be submitted until someone has entered one, and it has to post to
+   * an account that holds its currency.
+   */
+  async _validateForeignCurrency() {
+    if (this.isQuote) {
+      return;
     }
 
-    const currency = await this.fyo.getValue(
-      ModelNameEnum.SystemSettings,
-      'currency'
-    );
-    if (this.currency === currency) {
-      return 1.0;
-    }
-    const exchangeRate = await getExchangeRate({
-      fromCurrency: this.currency,
-      toCurrency: currency as string,
-    });
+    const currency = this.currency ?? this.companyCurrency;
+    if (this.isMultiCurrency) {
+      const rate = this.exchangeRate;
+      if (!rate || rate <= 0 || rate === 1) {
+        throw new ValidationError(
+          t`Enter the ${currency} to ${this.companyCurrency} exchange rate for this invoice.`
+        );
+      }
 
-    return safeParseFloat(exchangeRate.toFixed(2));
+      if (this.redeemLoyaltyPoints) {
+        throw new ValidationError(
+          t`Loyalty points cannot be redeemed on a ${currency} invoice.`
+        );
+      }
+    }
+
+    await this._validateAccountCurrency();
+  }
+
+  async _validateAccountCurrency() {
+    const currency = this.currency ?? this.companyCurrency;
+    if (!this.account) {
+      return;
+    }
+
+    const accountCurrency = (await this.fyo.getValue(
+      ModelNameEnum.Account,
+      this.account,
+      'accountCurrency'
+    )) as string | null | undefined;
+
+    if (accountCurrency && accountCurrency !== currency) {
+      throw new ValidationError(
+        t`${
+          this.account
+        } is a ${accountCurrency} account but this invoice is in ${currency}. Change the default account of ${this
+          .party!} to one in ${currency}.`
+      );
+    }
+  }
+
+  /**
+   * The amount and rate recorded against the party account, so the ledger
+   * knows the receivable or payable in the invoice currency.
+   */
+  getPartyForeignAmount(): ForeignAmount | undefined {
+    if (!this.isMultiCurrency) {
+      return;
+    }
+
+    return {
+      currency: this.currency!,
+      amount: this.grandTotal!,
+      exchangeRate: this.exchangeRate!,
+    };
   }
 
   async getTaxItems(): Promise<InvoiceTaxItem[]> {
@@ -1188,19 +1244,13 @@ export abstract class Invoice extends Transactional {
       dependsOn: ['party'],
     },
     exchangeRate: {
-      formula: async () => {
-        if (
-          this.currency ===
-          (this.fyo.singles.SystemSettings?.currency ?? DEFAULT_CURRENCY)
-        ) {
+      formula: () => {
+        if (!this.isMultiCurrency) {
           return 1;
         }
 
-        if (this.exchangeRate && this.exchangeRate !== 1) {
-          return this.exchangeRate;
-        }
-
-        return await this.getExchangeRate();
+        // Typed in by the user; never looked up.
+        return this.exchangeRate ?? undefined;
       },
       dependsOn: ['party', 'currency'],
     },
@@ -1355,6 +1405,8 @@ export abstract class Invoice extends Transactional {
     taxes: () => !this.taxes?.length,
     baseGrandTotal: () =>
       this.exchangeRate === 1 || this.baseGrandTotal!.isZero(),
+    exchangeRateSource: () => !this.isMultiCurrency,
+    outstandingForeign: () => !this.isMultiCurrency,
     terms: () => !(this.terms || !(this.isSubmitted || this.isCancelled)),
     attachment: () =>
       !(this.attachment || !(this.isSubmitted || this.isCancelled)),
@@ -1424,6 +1476,7 @@ export abstract class Invoice extends Transactional {
   getCurrencies: CurrenciesMap = {
     baseGrandTotal: () => this.companyCurrency,
     outstandingAmount: () => this.companyCurrency,
+    outstandingForeign: () => this.currency ?? this.companyCurrency,
   };
   _getCurrency() {
     if (this.exchangeRate === 1) {
@@ -1480,7 +1533,7 @@ export abstract class Invoice extends Transactional {
       ? outstandingAmount
       : outstandingAmount?.abs();
 
-    const data = {
+    const data: DocValueMap = {
       party: this.party,
       date: new Date().toISOString(),
       paymentType,
@@ -1492,13 +1545,28 @@ export abstract class Invoice extends Transactional {
           referenceType: this.schemaName,
           referenceName: this.name,
           amount: this.isReturn ? this.grandTotal : outstandingAmount,
+          ...(this.isMultiCurrency
+            ? { foreignAmount: this.outstandingForeign }
+            : {}),
         },
       ],
     };
 
+    if (this.isMultiCurrency) {
+      data.currency = this.currency;
+      data.foreignAmount = this.outstandingForeign;
+    }
+
     if (this.makeAutoPayment && this.autoPaymentAccount) {
       const autoPaymentAccount = this.isSales ? 'paymentAccount' : 'account';
       data[autoPaymentAccount] = this.autoPaymentAccount;
+
+      // Paid on the spot, so the invoice rate is the payment rate. Any other
+      // payment needs its own rate typed in.
+      if (this.isMultiCurrency) {
+        data.exchangeRate = this.exchangeRate;
+        data.exchangeRateSource = this.exchangeRateSource;
+      }
     }
 
     return this.fyo.doc.getNewDoc(ModelNameEnum.Payment, data) as Payment;

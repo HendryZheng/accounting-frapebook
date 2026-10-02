@@ -130,6 +130,40 @@
       "section": "Amounts"
     },
     {
+      "fieldname": "currency",
+      "label": "Currency",
+      "fieldtype": "Link",
+      "target": "Currency",
+      "readOnly": true,
+      "hidden": true
+    },
+    {
+      "fieldname": "exchangeRate",
+      "label": "Exchange Rate",
+      "fieldtype": "Float",
+      "hidden": true
+    },
+    {
+      "fieldname": "exchangeRateSource",
+      "label": "Exchange Rate Source",
+      "fieldtype": "Data",
+      "placeholder": "e.g. BI JISDOR, bank counter rate",
+      "section": "Amounts"
+    },
+    {
+      "fieldname": "foreignAmount",
+      "label": "Amount (Invoice Currency)",
+      "fieldtype": "Currency",
+      "section": "Amounts"
+    },
+    {
+      "fieldname": "exchangeGainLoss",
+      "label": "Exchange Gain/Loss",
+      "fieldtype": "Currency",
+      "readOnly": true,
+      "section": "Amounts"
+    },
+    {
       "fieldname": "taxes",
       "label": "Taxes",
       "fieldtype": "Table",
@@ -184,6 +218,9 @@
     "amount",
     "writeoff",
     "amountPaid",
+    "foreignAmount",
+    "exchangeRateSource",
+    "exchangeGainLoss",
     "attachment",
     "for"
   ],

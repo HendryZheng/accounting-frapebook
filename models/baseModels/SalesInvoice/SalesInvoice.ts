@@ -23,10 +23,11 @@ export class SalesInvoice extends Invoice {
   async getPosting() {
     const exchangeRate = this.exchangeRate ?? 1;
     const posting: LedgerPosting = new LedgerPosting(this, this.fyo);
+    const partyForeign = this.getPartyForeignAmount();
     if (this.isReturn) {
-      await posting.credit(this.account!, this.baseGrandTotal!);
+      await posting.credit(this.account!, this.baseGrandTotal!, partyForeign);
     } else {
-      await posting.debit(this.account!, this.baseGrandTotal!);
+      await posting.debit(this.account!, this.baseGrandTotal!, partyForeign);
     }
 
     for (const item of this.items!) {

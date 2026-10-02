@@ -132,11 +132,24 @@
       ]
     },
     {
+      "fieldname": "accountCurrency",
+      "label": "Account Currency",
+      "fieldtype": "Link",
+      "target": "Currency",
+      "placeholder": "Company currency"
+    },
+    {
       "fieldname": "isGroup",
       "label": "Is Group",
       "fieldtype": "Check",
       "default": false
     }
   ],
-  "quickEditFields": ["rootType", "parentAccount", "accountType", "isGroup"]
+  "quickEditFields": [
+    "rootType",
+    "parentAccount",
+    "accountType",
+    "accountCurrency",
+    "isGroup"
+  ]
 }

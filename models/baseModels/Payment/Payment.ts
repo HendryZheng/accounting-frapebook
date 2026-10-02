@@ -4,6 +4,7 @@ import { Doc } from 'fyo/model/doc';
 import {
   Action,
   ChangeArg,
+  CurrenciesMap,
   DefaultMap,
   FiltersMap,
   FormulaMap,
@@ -11,6 +12,7 @@ import {
   ListViewSettings,
   ValidationMap,
 } from 'fyo/model/types';
+import { DEFAULT_CURRENCY } from 'fyo/utils/consts';
 import { NotFoundError, ValidationError } from 'fyo/utils/errors';
 import {
   getDocStatusListColumn,
@@ -45,11 +47,41 @@ export class Payment extends Transactional {
   _accountsMap?: AccountTypeMap;
   initialAmount?: Money;
 
+  currency?: string;
+  exchangeRate?: number;
+  exchangeRateSource?: string;
+  foreignAmount?: Money;
+  exchangeGainLoss?: Money;
+
+  get companyCurrency(): string {
+    return this.fyo.singles.SystemSettings?.currency ?? DEFAULT_CURRENCY;
+  }
+
+  /**
+   * A payment against invoices in a foreign currency. The rows carry the
+   * foreign amount applied to each invoice, the payment carries the rate on
+   * the payment date, and the difference to the invoice rate is booked as a
+   * realized exchange gain or loss.
+   */
+  get isMultiCurrency(): boolean {
+    return !!this.currency && this.currency !== this.companyCurrency;
+  }
+
+  get hasPaymentRate(): boolean {
+    const rate = this.exchangeRate;
+    return !!rate && rate > 0 && rate !== 1;
+  }
+
   async paymentMethodDoc() {
     return (await this.loadAndGetLink('paymentMethod')) as PaymentMethod;
   }
 
   async change({ changed }: ChangeArg) {
+    if (this.isMultiCurrency) {
+      await this.applyForeignChange(changed);
+      return;
+    }
+
     if (changed === 'for') {
       this.updateAmountOnReferenceUpdate();
       await this.updateDetailsOnReferenceUpdate();
@@ -107,6 +139,85 @@ export class Payment extends Transactional {
     forReferences[0].amount = this.amount;
   }
 
+  async applyForeignChange(changed: string) {
+    if (changed === 'for') {
+      await this.updateDetailsOnReferenceUpdate();
+    }
+
+    const rows = this.for ?? [];
+    if (changed === 'foreignAmount' && rows.length === 1) {
+      rows[0].foreignAmount = this.foreignAmount;
+      rows[0].amount = await rows[0].getBaseAmount();
+    }
+
+    // Typing the base amount actually received sets the rate.
+    if (changed === 'amount' && this.foreignAmount?.isPositive()) {
+      this.exchangeRate =
+        (this.amount as Money).float / this.foreignAmount.float;
+    }
+
+    this.updateForeignTotals();
+  }
+
+  /**
+   * A row's base amount is always derived from its foreign amount, never
+   * typed. Rows added without a foreign amount pay the full outstanding.
+   * Only drafts are recomputed: once submitted, the rows are what was posted.
+   */
+  async updateForeignRows() {
+    if (this.submitted || this.cancelled) {
+      return;
+    }
+
+    for (const row of this.for ?? []) {
+      if (!row.foreignAmount || row.foreignAmount.isZero()) {
+        const { outstandingForeign } = await row.getInvoiceCurrencyDetails();
+        row.foreignAmount = outstandingForeign;
+      }
+
+      row.amount = await row.getBaseAmount();
+    }
+  }
+
+  /**
+   * Recomputes the totals of a foreign-currency payment from its rows and
+   * rate, so the stored amounts always agree with each other.
+   */
+  updateForeignTotals() {
+    if (!this.isMultiCurrency) {
+      return;
+    }
+
+    let foreign = this.fyo.pesa(0);
+    for (const row of this.for ?? []) {
+      foreign = foreign.add(row.foreignAmount ?? 0);
+    }
+
+    this.foreignAmount = foreign;
+    this.amount = this.hasPaymentRate
+      ? foreign.mul(this.exchangeRate!)
+      : this.getReferenceBaseTotal();
+    this.exchangeGainLoss = this.getExchangeGainLoss();
+  }
+
+  /** Base amount of the rows, at each invoice's own rate. */
+  getReferenceBaseTotal(): Money {
+    return (this.for ?? [])
+      .map((row) => row.amount ?? this.fyo.pesa(0))
+      .reduce((a, b) => a.add(b), this.fyo.pesa(0));
+  }
+
+  /** Positive is a gain, negative a loss. */
+  getExchangeGainLoss(): Money {
+    const amount = this.amount ?? this.fyo.pesa(0);
+    const references = this.getReferenceBaseTotal();
+    if (this.paymentType === 'Pay') {
+      return references.sub(amount);
+    }
+
+    return amount.sub(references);
+  }
+
   async validate() {
     await super.validate();
     if (this.submitted) {
@@ -115,9 +226,88 @@ export class Payment extends Transactional {
 
     await this.validateFor();
     this.validateAccounts();
+    if (this.isMultiCurrency) {
+      await this.validateForeignPayment();
+      await this.validateReferencesAreSet();
+      return;
+    }
+
     this.validateTotalReferenceAmount();
     await this.validateReferences();
     await this.validateReferencesAreSet();
+  }
+
+  async validateForeignPayment() {
+    const currency = this.currency!;
+    if (!(this.writeoff ?? this.fyo.pesa(0)).isZero()) {
+      throw new ValidationError(
+        t`Write-off is not available on ${currency} payments.`
+      );
+    }
+
+    const rows = this.for ?? [];
+    if (!rows.length) {
+      throw new ValidationError(
+        t`A ${currency} payment needs at least one ${currency} invoice to pay.`
+      );
+    }
+
+    for (const row of rows) {
+      this.validateReferenceType(row);
+      const invoice = await row.getInvoiceCurrencyDetails();
+      if (invoice.currency !== currency) {
+        throw new ValidationError(
+          t`${row.referenceName!} is in ${
+            invoice.currency
+          }. One payment can only pay invoices in ${currency}.`
+        );
+      }
+
+      if (invoice.isReturn) {
+        throw new ValidationError(
+          t`${row.referenceName!} is a return. Settle ${currency} returns with a Journal Entry.`
+        );
+      }
+
+      const foreign = row.foreignAmount ?? this.fyo.pesa(0);
+      if (!foreign.isPositive()) {
+        throw new ValidationError(
+          t`Enter the ${currency} amount paid against ${row.referenceName!}.`
+        );
+      }
+
+      if (foreign.gt(invoice.outstandingForeign)) {
+        throw new ValidationError(
+          t`${currency} ${foreign.float} is more than the ${currency} ${
+            invoice.outstandingForeign.float
+          } outstanding on ${row.referenceName!}.`
+        );
+      }
+    }
+  }
+
+  async beforeSubmit() {
+    await super.beforeSubmit();
+    if (!this.isMultiCurrency) {
+      return;
+    }
+
+    if (!this.hasPaymentRate) {
+      throw new ValidationError(
+        t`Enter the ${this.currency!} to ${
+          this.companyCurrency
+        } exchange rate for this payment.`
+      );
+    }
+
+    if (
+      !this.getExchangeGainLoss().isZero() &&
+      !this.fyo.singles.AccountingSettings?.realizedExchangeAccount
+    ) {
+      throw new ValidationError(
+        t`Set the Realized Exchange Gain/Loss Account in Accounting Settings.`
+      );
+    }
   }
 
   async validateFor() {
@@ -342,6 +532,11 @@ export class Payment extends Transactional {
      */
     await this.validateWriteOffAccount();
     const posting: LedgerPosting = new LedgerPosting(this, this.fyo);
+    if (this.isMultiCurrency) {
+      await this.applyForeignPosting(posting);
+      await this.applyTaxPosting(posting);
+      return posting;
+    }
 
     const paymentAccount = this.paymentAccount as string;
     const account = this.account as string;
@@ -350,6 +545,86 @@ export class Payment extends Transactional {
     await posting.debit(paymentAccount, amount);
     await posting.credit(account, amount);
 
+    await this.applyTaxPosting(posting);
+    await this.applyWriteOffPosting(posting);
+    return posting;
+  }
+
+  /**
+   * The party account is settled at each invoice's own rate, the bank at the
+   * payment rate, and the difference goes to realized exchange gain/loss.
+   */
+  async applyForeignPosting(posting: LedgerPosting) {
+    const currency = this.currency!;
+    const isReceive = this.paymentType !== 'Pay';
+    const partyAccount = (
+      isReceive ? this.account : this.paymentAccount
+    ) as string;
+    const bankAccount = (
+      isReceive ? this.paymentAccount : this.account
+    ) as string;
+
+    for (const row of this.for ?? []) {
+      const { exchangeRate } = await row.getInvoiceCurrencyDetails();
+      const foreign = {
+        currency,
+        amount: row.foreignAmount ?? this.fyo.pesa(0),
+        exchangeRate,
+      };
+
+      if (isReceive) {
+        await posting.credit(partyAccount, row.amount!, foreign);
+      } else {
+        await posting.debit(partyAccount, row.amount!, foreign);
+      }
+    }
+
+    // The bank line carries the foreign amount only when the bank account
+    // holds that currency. Foreign money paid into a base-currency account
+    // was converted by the bank.
+    const bankCurrency = (await this.fyo.getValue(
+      ModelNameEnum.Account,
+      bankAccount,
+      'accountCurrency'
+    )) as string | null | undefined;
+    const bankForeign =
+      bankCurrency === currency
+        ? {
+            currency,
+            amount: this.foreignAmount!,
+            exchangeRate: this.exchangeRate!,
+          }
+        : undefined;
+
+    const amount = this.amount as Money;
+    if (isReceive) {
+      await posting.debit(bankAccount, amount, bankForeign);
+    } else {
+      await posting.credit(bankAccount, amount, bankForeign);
+    }
+
+    const gainLoss = this.getExchangeGainLoss();
+    if (gainLoss.isZero()) {
+      return;
+    }
+
+    const realizedAccount = this.fyo.singles.AccountingSettings
+      ?.realizedExchangeAccount as string | undefined;
+    if (!realizedAccount) {
+      throw new NotFoundError(
+        t`Set the Realized Exchange Gain/Loss Account in Accounting Settings.`,
+        false
+      );
+    }
+
+    if (gainLoss.isPositive()) {
+      await posting.credit(realizedAccount, gainLoss);
+    } else {
+      await posting.debit(realizedAccount, gainLoss.abs());
+    }
+  }
+
+  async applyTaxPosting(posting: LedgerPosting) {
     if (this.taxes) {
       if (this.paymentType === 'Receive') {
         for (const tax of this.taxes) {
@@ -363,9 +638,6 @@ export class Payment extends Transactional {
         }
       }
     }
-
-    await this.applyWriteOffPosting(posting);
-    return posting;
   }
 
   async applyWriteOffPosting(posting: LedgerPosting) {
@@ -473,12 +745,28 @@ export class Payment extends Transactional {
       } else {
         outstandingAmount = previousOutstandingAmount.sub(row.amount!);
       }
-      await referenceDoc.setAndSync({ outstandingAmount });
+
+      if (!row.foreignAmount) {
+        await referenceDoc.setAndSync({ outstandingAmount });
+        continue;
+      }
+
+      const { outstandingForeign } = await row.getInvoiceCurrencyDetails();
+      await referenceDoc.setAndSync({
+        outstandingAmount,
+        outstandingForeign: outstandingForeign.sub(row.foreignAmount),
+      });
     }
   }
 
   async beforeSync(): Promise<void> {
     await super.beforeSync();
+    if (this.isMultiCurrency) {
+      await this.updateForeignRows();
+      this.updateForeignTotals();
+      await this.validateForeignPartialPayment();
+      return;
+    }
 
     for (const row of this.for ?? []) {
       if (!this.fyo.singles.AccountingSettings?.enablePartialPayment) {
@@ -496,6 +784,21 @@ export class Payment extends Transactional {
             );
           }
         }
+      }
+    }
+  }
+
+  async validateForeignPartialPayment() {
+    if (this.fyo.singles.AccountingSettings?.enablePartialPayment) {
+      return;
+    }
+
+    for (const row of this.for ?? []) {
+      const { outstandingForeign } = await row.getInvoiceCurrencyDetails();
+      if ((row.foreignAmount ?? this.fyo.pesa(0)).lt(outstandingForeign)) {
+        throw new ValidationError(
+          this.fyo.t`Enable Partial payment to pay partial amount`
+        );
       }
     }
   }
@@ -520,7 +823,17 @@ export class Payment extends Transactional {
       const outstandingAmount = isReturnInvoice
         ? (refDoc.outstandingAmount as Money).sub(ref.amount!)
         : (refDoc.outstandingAmount as Money).add(ref.amount!);
-      await refDoc.setAndSync({ outstandingAmount });
+
+      if (!ref.foreignAmount) {
+        await refDoc.setAndSync({ outstandingAmount });
+        continue;
+      }
+
+      const { outstandingForeign } = await ref.getInvoiceCurrencyDetails();
+      await refDoc.setAndSync({
+        outstandingAmount,
+        outstandingForeign: outstandingForeign.add(ref.foreignAmount),
+      });
     }
   }
 
@@ -703,9 +1016,42 @@ export class Payment extends Transactional {
         return PaymentTypeEnum.Pay;
       },
     },
+    currency: {
+      formula: async () => {
+        const row = (this.for ?? []).find(
+          (r) => r.referenceType && r.referenceName
+        );
+        if (!row) {
+          return this.companyCurrency;
+        }
+
+        return (await row.getInvoiceCurrencyDetails()).currency;
+      },
+    },
     amount: {
-      formula: () => this.getSum('for', 'amount', false),
+      formula: () => {
+        if (this.isMultiCurrency && this.hasPaymentRate) {
+          return (this.foreignAmount ?? this.fyo.pesa(0)).mul(
+            this.exchangeRate!
+          );
+        }
+
+        return this.getSum('for', 'amount', false);
+      },
       dependsOn: ['for'],
+    },
+    foreignAmount: {
+      formula: () => {
+        if (!this.isMultiCurrency) {
+          return null;
+        }
+
+        return this.getSum('for', 'foreignAmount', false);
+      },
+      dependsOn: ['for'],
+    },
+    exchangeGainLoss: {
+      formula: () => (this.isMultiCurrency ? this.getExchangeGainLoss() : null),
     },
     amountPaid: {
       formula: () => this.amount!.sub(this.writeoff!),
@@ -722,6 +1068,12 @@ export class Payment extends Transactional {
 
   validations: ValidationMap = {
     amount: async (value: DocValue) => {
+      // Foreign payments are checked in foreign currency, where the base
+      // amount can exceed the base outstanding when the rate has risen.
+      if (this.isMultiCurrency) {
+        return;
+      }
+
       if ((value as Money).isNegative()) {
         throw new ValidationError(
           this.fyo.t`Payment amount cannot be less than zero.`
@@ -767,10 +1119,18 @@ export class Payment extends Transactional {
 
   hidden: HiddenMap = {
     amountPaid: () => this.writeoff?.isZero() ?? true,
+    writeoff: () => this.isMultiCurrency,
+    foreignAmount: () => !this.isMultiCurrency,
+    exchangeRateSource: () => !this.isMultiCurrency,
+    exchangeGainLoss: () => !this.isMultiCurrency,
     attachment: () =>
       !(this.attachment || !(this.isSubmitted || this.isCancelled)),
     for: () => !!((this.isSubmitted || this.isCancelled) && !this.for?.length),
     taxes: () => !this.taxes?.length,
+  };
+
+  getCurrencies: CurrenciesMap = {
+    foreignAmount: () => this.currency ?? this.companyCurrency,
   };
 
   static filters: FiltersMap = {

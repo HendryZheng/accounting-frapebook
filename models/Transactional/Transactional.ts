@@ -40,6 +40,7 @@ export abstract class Transactional extends Doc {
     }
 
     posting.validate();
+    await posting.validateForeignCurrency();
   }
 
   async afterSubmit(): Promise<void> {

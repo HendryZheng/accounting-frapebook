@@ -30,12 +30,17 @@
       "required": true
     },
     {
+      "fieldname": "foreignAmount",
+      "label": "Amount (Invoice Currency)",
+      "fieldtype": "Currency"
+    },
+    {
       "fieldname": "amount",
       "label": "Amount",
       "fieldtype": "Currency",
       "required": true
     }
   ],
-  "tableFields": ["referenceType", "referenceName", "amount"],
+  "tableFields": ["referenceType", "referenceName", "foreignAmount", "amount"],
   "keywordFields": ["referenceName", "referenceType"]
 }

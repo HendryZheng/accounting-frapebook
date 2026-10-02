@@ -71,6 +71,10 @@
         {
           "value": "Depreciation Entry",
           "label": "Depreciation Entry"
+        },
+        {
+          "value": "Exchange Rate Revaluation",
+          "label": "Exchange Rate Revaluation"
         }
       ],
       "required": true,

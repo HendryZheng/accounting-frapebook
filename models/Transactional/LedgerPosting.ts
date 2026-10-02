@@ -4,7 +4,7 @@ import { AccountingLedgerEntry } from 'models/baseModels/AccountingLedgerEntry/A
 import { ModelNameEnum } from 'models/types';
 import { Money } from 'pesa';
 import { Transactional } from './Transactional';
-import { TransactionType } from './types';
+import { ForeignAmount, TransactionType } from './types';
 
 /**
  * # LedgerPosting
@@ -27,6 +27,8 @@ export class LedgerPosting {
   creditMap: Record<string, AccountingLedgerEntry>;
   debitMap: Record<string, AccountingLedgerEntry>;
   reverted: boolean;
+  /** Entries that took at least one amount with no foreign currency. */
+  _plainEntries: Set<AccountingLedgerEntry>;
 
   constructor(refDoc: Transactional, fyo: Fyo) {
     this.fyo = fyo;
@@ -35,16 +37,115 @@ export class LedgerPosting {
     this.creditMap = {};
     this.debitMap = {};
     this.reverted = false;
+    this._plainEntries = new Set();
   }
 
-  async debit(account: string, amount: Money) {
+  async debit(account: string, amount: Money, foreign?: ForeignAmount) {
     const ledgerEntry = this._getLedgerEntry(account, 'debit');
     await ledgerEntry.set('debit', ledgerEntry.debit!.add(amount));
+    await this._addForeign(ledgerEntry, 'debit', amount, foreign);
   }
 
-  async credit(account: string, amount: Money) {
+  async credit(account: string, amount: Money, foreign?: ForeignAmount) {
     const ledgerEntry = this._getLedgerEntry(account, 'credit');
     await ledgerEntry.set('credit', ledgerEntry.credit!.add(amount));
+    await this._addForeign(ledgerEntry, 'credit', amount, foreign);
+  }
+
+  /**
+   * Lines to the same account and side share one ledger entry, so their
+   * foreign amounts have to add up the same way the base amounts do.
+   */
+  async _addForeign(
+    ledgerEntry: AccountingLedgerEntry,
+    type: TransactionType,
+    amount: Money,
+    foreign?: ForeignAmount
+  ) {
+    if (!foreign) {
+      if (!amount.isZero()) {
+        this._plainEntries.add(ledgerEntry);
+      }
+      return;
+    }
+
+    const existingCurrency = ledgerEntry.transactionCurrency;
+    if (existingCurrency && existingCurrency !== foreign.currency) {
+      throw new ValidationError(
+        t`Lines posted to ${ledgerEntry.account!} mix ${existingCurrency} and ${
+          foreign.currency
+        }.`
+      );
+    }
+
+    const field = type === 'debit' ? 'foreignDebit' : 'foreignCredit';
+    const previous = ledgerEntry.get(field) as Money | null | undefined;
+    const hasPrevious = !!previous && !previous.isZero();
+    const total = hasPrevious ? previous.add(foreign.amount) : foreign.amount;
+
+    // A single line keeps the rate it was given. Merged lines get the
+    // effective rate of the whole entry.
+    let exchangeRate = foreign.exchangeRate;
+    if (hasPrevious && !total.isZero()) {
+      exchangeRate = (ledgerEntry[type] as Money).float / total.float;
+    }
+
+    await ledgerEntry.set('transactionCurrency', foreign.currency);
+    await ledgerEntry.set(field, total);
+    await ledgerEntry.set('exchangeRate', exchangeRate);
+  }
+
+  /**
+   * An account tagged with a foreign currency must get the foreign amount on
+   * every posting, or its foreign balance stops meaning anything. The one
+   * exception is a revaluation, which moves the base amount only.
+   */
+  async validateForeignCurrency() {
+    const accounts = [...new Set(this.entries.map((e) => e.account!))];
+    if (!accounts.length) {
+      return;
+    }
+
+    const rows = (await this.fyo.db.getAll(ModelNameEnum.Account, {
+      fields: ['name', 'accountCurrency'],
+      filters: { name: ['in', accounts] },
+    })) as { name: string; accountCurrency?: string | null }[];
+
+    const companyCurrency = this.fyo.singles.SystemSettings?.currency;
+    const currencyMap: Record<string, string> = {};
+    for (const { name, accountCurrency } of rows) {
+      if (accountCurrency && accountCurrency !== companyCurrency) {
+        currencyMap[name] = accountCurrency;
+      }
+    }
+
+    const isRevaluation =
+      this.refDoc.schemaName === ModelNameEnum.JournalEntry &&
+      this.refDoc.get('entryType') === 'Exchange Rate Revaluation';
+
+    for (const entry of this.entries) {
+      const currency = currencyMap[entry.account!];
+      if (!currency) {
+        continue;
+      }
+
+      if (entry.debit!.isZero() && entry.credit!.isZero()) {
+        continue;
+      }
+
+      if (this._plainEntries.has(entry) && !isRevaluation) {
+        throw new ValidationError(
+          t`${entry.account!} is a ${currency} account. Every posting to it needs the ${currency} amount.`
+        );
+      }
+
+      const transactionCurrency = entry.transactionCurrency;
+      if (transactionCurrency && transactionCurrency !== currency) {
+        throw new ValidationError(
+          t`${entry.account!} is a ${currency} account and cannot take a ${transactionCurrency} amount.`
+        );
+      }
+    }
   }
 
   async post() {

@@ -156,7 +156,14 @@ export default {
     },
     tableFields() {
       const fields = fyo.schemaMap[this.df.target].tableFields ?? [];
-      return fields.map((fieldname) => fyo.getField(this.df.target, fieldname));
+      return fields
+        .filter(
+          // The invoice-currency column only means something on a
+          // foreign-currency document.
+          (fieldname) =>
+            fieldname !== 'foreignAmount' || !!this.doc?.isMultiCurrency
+        )
+        .map((fieldname) => fyo.getField(this.df.target, fieldname));
     },
   },
   watch: {
