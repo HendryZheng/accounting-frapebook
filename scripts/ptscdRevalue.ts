@@ -98,15 +98,16 @@ function serialize(fyo: Fyo, lines: RevaluationLine[] | null, rate?: number) {
   }));
 }
 
-async function main() {
+/** The whole script minus stdin/stdout; the MCP server calls this too. */
+export async function revalue(raw: unknown) {
   let req: Request;
   try {
-    req = validate(JSON.parse(await readStdin()));
+    req = validate(raw);
   } catch (e) {
-    return out(fail('BAD_REQUEST', (e as Error).message));
+    return fail('BAD_REQUEST', (e as Error).message);
   }
 
-  const result = await withBooks(req.dbPath, async (fyo, company) => {
+  return await withBooks(req.dbPath, async (fyo, company) => {
     const balances = await getForeignBalances(fyo, {
       asOf: req.asOf,
       currency: req.currency,
@@ -220,8 +221,16 @@ async function main() {
       remainingDelta: money(fyo, fyo.pesa(0)),
     };
   });
-
-  out(result);
 }
 
-run(main);
+async function main() {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readStdin());
+  } catch (e) {
+    return out(fail('BAD_REQUEST', (e as Error).message));
+  }
+  out(await revalue(raw));
+}
+
+if (require.main === module) run(main);

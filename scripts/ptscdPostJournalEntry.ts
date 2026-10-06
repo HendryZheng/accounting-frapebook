@@ -82,15 +82,16 @@ function validate(req: unknown): Request {
   return r;
 }
 
-async function main() {
+/** The whole bridge minus stdin/stdout; the MCP server calls this too. */
+export async function postJournalEntry(raw: unknown) {
   let req: Request;
   try {
-    req = validate(JSON.parse(await readStdin()));
+    req = validate(raw);
   } catch (e) {
-    return out(fail('BAD_REQUEST', (e as Error).message));
+    return fail('BAD_REQUEST', (e as Error).message);
   }
 
-  const result = await withBooks<Posted>(req.dbPath, async (fyo, company) => {
+  return await withBooks<Posted>(req.dbPath, async (fyo, company) => {
     const marker = markerFor(req.idempotencyKey);
 
     const existing = await findPosted(fyo, marker);
@@ -134,8 +135,16 @@ async function main() {
     }
     return { ok: true, externalReference: name, alreadyPosted: false, company };
   });
-
-  out(result);
 }
 
-run(main);
+async function main() {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readStdin());
+  } catch (e) {
+    return out(fail('BAD_REQUEST', (e as Error).message));
+  }
+  out(await postJournalEntry(raw));
+}
+
+if (require.main === module) run(main);

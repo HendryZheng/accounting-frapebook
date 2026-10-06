@@ -33,10 +33,11 @@ interface Request {
   asOf?: string;
 }
 
-async function main() {
+/** The whole script minus stdin/stdout; the MCP server calls this too. */
+export async function fxAudit(raw: unknown) {
   let req: Request;
   try {
-    req = JSON.parse(await readStdin()) as Request;
+    req = raw as Request;
     if (!req || typeof req.dbPath !== 'string' || !req.dbPath) {
       throw new Error('dbPath is required');
     }
@@ -44,11 +45,11 @@ async function main() {
       throw new Error('asOf must be a date like 2026-09-30');
     }
   } catch (e) {
-    return out(fail('BAD_REQUEST', (e as Error).message));
+    return fail('BAD_REQUEST', (e as Error).message);
   }
 
   const asOf = req.asOf ?? new Date().toISOString().slice(0, 10);
-  const result = await withBooks(req.dbPath, async (fyo, company) => {
+  return await withBooks(req.dbPath, async (fyo, company) => {
     const balances = await getForeignBalances(fyo, { asOf });
     const untagged = await getUntaggedForeignAccounts(fyo, asOf);
     const legacy = await getLegacyOpenInvoices(fyo);
@@ -82,8 +83,16 @@ async function main() {
       })),
     };
   });
-
-  out(result);
 }
 
-run(main);
+async function main() {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readStdin());
+  } catch (e) {
+    return out(fail('BAD_REQUEST', (e as Error).message));
+  }
+  out(await fxAudit(raw));
+}
+
+if (require.main === module) run(main);
