@@ -138,12 +138,14 @@ export async function withBooks<T>(
  */
 export async function findPosted(
   fyo: Fyo,
-  marker: string
+  marker: string,
+  schemaName = 'JournalEntry',
+  field = 'userRemark'
 ): Promise<string | null> {
-  const existing = (await fyo.db.getAll('JournalEntry', {
+  const existing = (await fyo.db.getAll(schemaName, {
     fields: ['name'],
     filters: {
-      userRemark: ['like', marker],
+      [field]: ['like', marker],
       submitted: true,
       cancelled: false,
     },
@@ -157,15 +159,20 @@ export async function findPosted(
  * Clear any draft left by an earlier failure, so retries do not pile them up
  * and the marker stays unambiguous.
  */
-export async function clearStaleDrafts(fyo: Fyo, marker: string) {
-  const stale = (await fyo.db.getAll('JournalEntry', {
+export async function clearStaleDrafts(
+  fyo: Fyo,
+  marker: string,
+  schemaName = 'JournalEntry',
+  field = 'userRemark'
+) {
+  const stale = (await fyo.db.getAll(schemaName, {
     fields: ['name'],
-    filters: { userRemark: ['like', marker], submitted: false },
+    filters: { [field]: ['like', marker], submitted: false },
   })) as { name: string }[];
 
   for (const d of stale) {
     try {
-      await (await fyo.doc.getDoc('JournalEntry', d.name)).delete();
+      await (await fyo.doc.getDoc(schemaName, d.name)).delete();
     } catch {
       /* best effort */
     }

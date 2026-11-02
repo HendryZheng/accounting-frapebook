@@ -1,6 +1,8 @@
 /**
  * MCP server (stdio) over one Frappe Books company file for PT SCD Finance
- * Ops: read the books, post Journal Entries, run month-end revaluation.
+ * Ops: read the books, post Journal Entries, run month-end revaluation, and
+ * run Sales and Purchases (parties, items, quotes, invoices, payments; see
+ * ptscdSalesPurchases).
  *
  * Writes go through the same functions as the JSON bridges
  * (ptscdPostJournalEntry, ptscdRevalue), so every validation, foreign-currency
@@ -24,6 +26,10 @@ import { createInterface } from 'readline';
 import { fxAudit } from './ptscdFxAudit';
 import { postJournalEntry } from './ptscdPostJournalEntry';
 import { revalue } from './ptscdRevalue';
+import {
+  handlers as salesPurchasesHandlers,
+  tools as salesPurchasesTools,
+} from './ptscdSalesPurchases';
 import { fail, isDate, money, withBooks } from './ptscdShared';
 
 // stdout carries the protocol; anything the app logs goes to stderr.
@@ -200,6 +206,7 @@ const tools = [
       idempotentHint: true,
     },
   },
+  ...salesPurchasesTools,
 ];
 
 /** Money and dates as plain JSON. */
@@ -451,6 +458,8 @@ const handlers: Record<string, (a: Args) => Promise<unknown>> = {
   post_journal_entry: (a) => postJournalEntry({ ...a, dbPath }),
 
   revalue_foreign_currency: (a) => revalue({ ...a, dbPath }),
+
+  ...salesPurchasesHandlers(dbPath),
 };
 
 type Message = {

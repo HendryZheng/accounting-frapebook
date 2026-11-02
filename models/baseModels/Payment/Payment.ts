@@ -999,7 +999,8 @@ export class Payment extends Transactional {
             return PaymentTypeEnum.Receive;
           }
         } else if (partyDoc.role === PartyRoleEnum.Both) {
-          if (refDoc?.isSales && refDoc.isReturn) {
+          // Money comes in for a sale or a purchase return, goes out otherwise.
+          if (refDoc && refDoc.isSales === refDoc.isReturn) {
             return PaymentTypeEnum.Pay;
           } else {
             return PaymentTypeEnum.Receive;
